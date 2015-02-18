@@ -26,6 +26,7 @@
 #include <EGL/eglext.h>
 
 static void *hwcimage_eglbuffer_to_handle(EGLClientBuffer buffer);
+static bool hwcimage_is_enabled();
 
 #define HWCIMAGE_LOAD_EVENT ((QEvent::Type) (QEvent::User + 1))
 
@@ -40,6 +41,13 @@ public:
 
     void execute() {
         image = QImage(file).convertToFormat(QImage::Format_RGBX8888);
+
+        if (rotation != 0) {
+            QTransform xform;
+            xform.rotate(rotation);
+            image = image.transformed(xform, Qt::FastTransformation);
+        }
+
         if (textureSize.width() > 0 && textureSize.height() > 0)
             image = image.scaled(textureSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 
@@ -58,6 +66,7 @@ public:
                                      Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
                 p.save();
                 p.setOpacity(0.1);
+                p.setCompositionMode(QPainter::CompositionMode_Plus);
                 p.fillRect(image.rect(), glass);
                 p.restore();
             }
@@ -82,6 +91,7 @@ public:
     QColor overlay;
     QSize textureSize;
     qreal pixelRatio;
+    qreal rotation;
 
     HwcImage *hwcImage;
 
@@ -91,9 +101,10 @@ public:
 QMutex HwcImageLoadRequest::mutex;
 
 HwcImage::HwcImage()
-    : m_texture(0)
-    , m_pendingRequest(0)
+    : m_pendingRequest(0)
+    , m_rotationHandler(0)
     , m_status(Null)
+    , m_textureRotation(0)
     , m_asynchronous(true)
 {
     setFlag(ItemHasContents, true);
@@ -107,6 +118,25 @@ HwcImage::~HwcImage()
     HwcImageLoadRequest::mutex.unlock();
 }
 
+
+/* We want to track the item that does rotation changes explicitly. This isn't
+   strictly needed, but it is easy to do and means we get away with tracking
+   one single object as opposed to listening for changes in an entire parent
+   hierarchy which would also be a lot slower.
+  */
+void HwcImage::setRotationHandler(QQuickItem *item)
+{
+    if (m_rotationHandler == item)
+        return;
+    if (hwcimage_is_enabled() && m_rotationHandler)
+        disconnect(m_rotationHandler, &QQuickItem::rotationChanged, this, &HwcImage::handlerRotationChanged);
+    m_rotationHandler = item;
+    if (hwcimage_is_enabled() && m_rotationHandler)
+        connect(m_rotationHandler, &QQuickItem::rotationChanged, this, &HwcImage::handlerRotationChanged);
+    emit rotationHandlerChanged(m_rotationHandler);
+    polish();
+}
+
 void HwcImage::setAsynchronous(bool is)
 {
     if (m_asynchronous == is)
@@ -118,9 +148,9 @@ void HwcImage::setAsynchronous(bool is)
 
 void HwcImage::setSource(const QUrl &source)
 {
-	if (source == m_source)
-		return;
-	m_source = source;
+    if (source == m_source)
+        return;
+    m_source = source;
     emit sourceChanged(m_source);
     polish();
 }
@@ -161,6 +191,13 @@ void HwcImage::setPixelRatio(qreal ratio)
     polish();
 }
 
+void HwcImage::handlerRotationChanged()
+{
+    qreal rotation = m_rotationHandler->rotation();
+    if ((rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270) && m_textureRotation != rotation)
+        polish();
+}
+
 void HwcImage::updatePolish()
 {
     if (m_source.isEmpty())
@@ -176,6 +213,7 @@ void HwcImage::updatePolish()
     req->effect = m_effect;
     req->overlay = m_overlayColor;
     req->pixelRatio = m_pixelRatio;
+    req->rotation = m_rotationHandler ? m_rotationHandler->rotation() : 0;
 
     if (m_asynchronous) {
         HwcImageLoadRequest::mutex.lock();
@@ -196,6 +234,7 @@ void HwcImage::apply(HwcImageLoadRequest *req)
     setSize(s);
     m_status = s.isValid() ? Ready : Error;
     emit statusChanged(m_status);
+    m_textureRotation = req->rotation;
     update();
 }
 
@@ -244,8 +283,12 @@ private:
 class HwcImageNode : public QSGSimpleTextureNode
 {
 public:
-    HwcImageNode() { qsgnode_set_description(this, "hwc-image-node"); }
-    ~HwcImageNode() { delete texture(); }
+    HwcImageNode() {
+        qsgnode_set_description(this, QStringLiteral("hwc-image-node"));
+    }
+    ~HwcImageNode() {
+        delete texture();
+    }
     void *handle() const {
         HwcImageTexture *t = static_cast<HwcImageTexture *>(texture());
         return t ? t->handle() : 0;
@@ -276,42 +319,67 @@ HwcImageNode *HwcImage::updateActualPaintNode(QSGNode *old)
     return tn;
 }
 
+QMatrix4x4 HwcImage::reverseTransform() const
+{
+    if (!m_rotationHandler)
+        return QMatrix4x4();
+    // We assume a center-oriented rotation with no monkey busines between us
+    // and the rotationHandler and the rotationHandler must be a parent of
+    // ourselves. (It wouldn't rotate otherwise)
+    float w2 = width() / 2;
+    float h2 = height() / 2;
+    QMatrix4x4 m;
+    m.translate(w2, h2);
+    m.rotate(-m_textureRotation, 0, 0, 1);
+    m.translate(-w2, -h2);
+    return m;
+}
+
 QSGNode *HwcImage::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
-    // Check for availablility of EGL_HYBRIS_native_buffer support, which we
-    // need to do hwc layering of background images...
-    static int hybrisBuffers = -1;
-    if (hybrisBuffers < 0) {
-        if (strstr(eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS), "EGL_HYBRIS_native_buffer") == 0)
-            hybrisBuffers = 0;
-        else
-            hybrisBuffers = 1;
-    }
-
-    if (!HwcRenderStage::isHwcEnabled())
+    if (!hwcimage_is_enabled())
         return updateActualPaintNode(old);
 
+    /*
+        When we're using hwcomposer, we replace the image with a slightly more
+        complex subtree. There is an HwcNode which is where we put the buffer
+        handle which the HwcRenderStage will pick up. Then we have a
+        QSGTransformNode which we use to apply reverse transforms. For different
+        orientations we create a rotated texture and invert the transform
+        in the scene graph.
+
+        HwcNode             <- The hook which makes us get picked up by the HwcRenderStage
+           |
+        QSGTransformNode    <- The reverse transform used to get correct orientation
+           |
+        HwcImageNode        <- The texture node which gets rendered as a fallback.
+     */
     if (old) {
         HwcNode *hwcNode = static_cast<HwcNode *>(old);
-        HwcImageNode *contentNode = updateActualPaintNode(hwcNode->firstChild());
+        HwcImageNode *contentNode = updateActualPaintNode(hwcNode->firstChild()->firstChild());
         if (contentNode == 0) {
             delete hwcNode;
             return 0;
-        } else if (contentNode != hwcNode->firstChild()) {
+        } else if (contentNode != hwcNode->firstChild()->firstChild()) {
             // No need to remove the old node as the updatePaintNode call will
             // already have deleted the old content node and it would thus have
             // already been taken out.
-            hwcNode->appendChildNode(contentNode);
+            hwcNode->firstChild()->appendChildNode(contentNode);
         }
-        hwcNode->update(contentNode->handle());
+        static_cast<QSGTransformNode *>(hwcNode->firstChild())->setMatrix(reverseTransform());
+        hwcNode->update(contentNode, contentNode->handle());
         return hwcNode;
     }
 
     HwcImageNode *contentNode = updateActualPaintNode(0);
     if (contentNode) {
         HwcNode *hwcNode = new HwcNode();
-        hwcNode->appendChildNode(contentNode);
-        hwcNode->update(contentNode->handle());
+        QSGTransformNode *xnode = new QSGTransformNode();
+        xnode->setMatrix(reverseTransform());
+        qsgnode_set_description(xnode, QStringLiteral("hwc-reverse-xform"));
+        xnode->appendChildNode(contentNode);
+        hwcNode->appendChildNode(xnode);
+        hwcNode->update(contentNode, contentNode->handle());
         return hwcNode;
     }
 
@@ -356,6 +424,7 @@ static void hwcimage_initialize()
         return;
     initialized = true;
 
+
     glEGLImageTargetTexture2DOES = (_glEGLImageTargetTexture2DOES) eglGetProcAddress("glEGLImageTargetTexture2DOES");
     eglCreateImageKHR = (_eglCreateImageKHR) eglGetProcAddress("eglCreateImageKHR");
     eglDestroyImageKHR = (_eglDestroyImageKHR) eglGetProcAddress("eglDestroyImageKHR");
@@ -365,9 +434,26 @@ static void hwcimage_initialize()
     eglHybrisReleaseNativeBuffer = (_eglHybrisReleaseNativeBuffer) eglGetProcAddress("eglHybrisReleaseNativeBuffer");
 }
 
+static bool hwcimage_is_enabled()
+{
+    // Check for availablility of EGL_HYBRIS_native_buffer support, which we
+    // need to do hwc layering of background images...
+    static int hybrisBuffers = -1;
+    if (hybrisBuffers < 0) {
+        if (strstr(eglQueryString(eglGetDisplay(EGL_DEFAULT_DISPLAY), EGL_EXTENSIONS), "EGL_HYBRIS_native_buffer") == 0)
+            hybrisBuffers = 0;
+        else
+            hybrisBuffers = 1;
+    }
+    return hybrisBuffers == 1 && HwcRenderStage::isHwcEnabled();
+}
+
 QSGTexture *HwcImageTexture::create(const QImage &image)
 {
     hwcimage_initialize();
+
+    if (!hwcimage_is_enabled())
+        return 0;
 
     EGLClientBuffer buffer = 0;
     int width = image.width();
