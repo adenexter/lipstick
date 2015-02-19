@@ -24,6 +24,7 @@
 
 class HwcImageNode;
 class HwcImageLoadRequest;
+class HwcImageTextureProvider;
 
 class QSGTexture;
 
@@ -70,6 +71,12 @@ public:
     void setRotationHandler(QQuickItem *rotationHandler);
     QQuickItem *rotationHandler() const { return m_rotationHandler; }
 
+    bool isTextureProvider() const { return true; }
+    QSGTextureProvider *textureProvider() const;
+
+    void invalidateSceneGraph();
+    void releaseResources();
+
 protected:
     bool event(QEvent *event);
 	void updatePolish();
@@ -96,6 +103,7 @@ private:
     HwcImageNode *updateActualPaintNode(QSGNode *node);
 
     HwcImageLoadRequest *m_pendingRequest;
+    HwcImageTextureProvider *m_textureProvider;
     QQuickItem *m_rotationHandler;
 	QUrl m_source;
     QImage m_image;

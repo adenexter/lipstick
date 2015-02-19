@@ -21,6 +21,7 @@
 
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
+#include <QSGTextureProvider>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -100,8 +101,27 @@ public:
 
 QMutex HwcImageLoadRequest::mutex;
 
+class HwcImageTextureProvider : public QSGTextureProvider, public QRunnable
+{
+public:
+    HwcImageTextureProvider()
+        : m_texture(0)
+    {
+    }
+
+    QSGTexture *texture() const { return m_texture; }
+
+    // Since cleanup jobs are deleted immediately after being run rather than creating
+    // a seperate object to delete the provider just make the provider its own cleanup
+    // job and it'll be deleted after the no-op run.
+    void run() {}
+
+    QSGTexture *m_texture;
+};
+
 HwcImage::HwcImage()
     : m_pendingRequest(0)
+    , m_textureProvider(0)
     , m_rotationHandler(0)
     , m_status(Null)
     , m_textureRotation(0)
@@ -116,6 +136,11 @@ HwcImage::~HwcImage()
     if (m_pendingRequest)
         m_pendingRequest->hwcImage = 0;
     HwcImageLoadRequest::mutex.unlock();
+
+
+    QQuickWindow *w = window();
+    if (w && m_textureProvider)
+        w->scheduleRenderJob(m_textureProvider, QQuickWindow::AfterSynchronizingStage);
 }
 
 
@@ -305,16 +330,9 @@ HwcImageNode *HwcImage::updateActualPaintNode(QSGNode *old)
     HwcImageNode *tn = static_cast<HwcImageNode *>(old);
     if (!tn)
         tn = new HwcImageNode();
-    if (!tn->texture() || !m_image.isNull()) {
-        if (tn->texture())
-            delete tn->texture();
-        QSGTexture *t = HwcImageTexture::create(m_image);
-        if (t)
-            tn->setTexture(t);
-        else
-            tn->setTexture(window()->createTextureFromImage(m_image));
-        m_image = QImage();
-    }
+    QSGTexture *texture = textureProvider()->texture();
+    if (tn->texture() != texture)
+        tn->setTexture(texture);
     tn->setRect(0, 0, width(), height());
     return tn;
 }
@@ -386,6 +404,36 @@ QSGNode *HwcImage::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     return 0;
 }
 
+QSGTextureProvider *HwcImage::textureProvider() const
+{
+    if (!m_textureProvider)
+        const_cast<HwcImage *>(this)->m_textureProvider = new HwcImageTextureProvider;
+
+    if (!m_textureProvider->m_texture || !m_image.isNull()) {
+        delete m_textureProvider->m_texture;
+
+        if (!m_image.isNull() && !(m_textureProvider->m_texture = HwcImageTexture::create(m_image)))
+            m_textureProvider->m_texture = window()->createTextureFromImage(m_image);
+
+        const_cast<HwcImage *>(this)->m_image = QImage();
+    }
+
+    return m_textureProvider;
+}
+
+void HwcImage::invalidateSceneGraph()
+{\
+    delete m_textureProvider;
+    m_textureProvider = 0;
+}
+
+void HwcImage::releaseResources()
+{
+    if (m_textureProvider) {
+        window()->scheduleRenderJob(m_textureProvider, QQuickWindow::AfterSynchronizingStage);
+        m_textureProvider = 0;
+    }
+}
 
 // from hybris_nativebuffer.h in libhybris
 #define HYBRIS_USAGE_SW_WRITE_RARELY    0x00000020
