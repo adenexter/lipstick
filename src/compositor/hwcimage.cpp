@@ -176,7 +176,9 @@ void HwcImage::setSource(const QUrl &source)
     if (source == m_source)
         return;
     m_source = source;
+    m_status = Loading;
     emit sourceChanged(m_source);
+    emit statusChanged(m_status);
     polish();
 }
 
@@ -227,8 +229,10 @@ void HwcImage::updatePolish()
 {
     if (m_source.isEmpty())
         return;
-    m_status = Loading;
-    emit statusChanged(m_status);
+    if (m_status != Loading) {
+        m_status = Loading;
+        emit statusChanged(m_status);
+    }
 
     m_image = QImage();
     HwcImageLoadRequest *req = new HwcImageLoadRequest();
