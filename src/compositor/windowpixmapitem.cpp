@@ -187,53 +187,8 @@ void SurfaceNode::updateGeometry()
         QRectF textureRect = m_texture->convertToNormalizedSourceRect(sourceRect);
 
         if (m_radius) {
-            float radius = qMin(float(qMin(m_rect.width(), m_rect.height()) * 0.5f), float(m_radius));
-            int segments = qBound(5, qCeil(radius * (M_PI / 6)), 18);
-            float angle = 0.5f * float(M_PI) / segments;
-
-            m_geometry.allocate((segments + 1) * 2 * 2);
-
-            QSGGeometry::TexturedPoint2D *v = m_geometry.vertexDataAsTexturedPoint2D();
-            QSGGeometry::TexturedPoint2D *vlast = v + (segments + 1) * 2 * 2 - 2;
-
-            float textureXRadius = radius * textureRect.width() / m_rect.width();
-            float textureYRadius = radius * textureRect.height() / m_rect.height();
-
-            float c = 1; float cosStep = qFastCos(angle);
-            float s = 0; float sinStep = qFastSin(angle);
-
-            for (int ii = 0; ii <= segments; ++ii) {
-                float px = m_rect.left() + radius - radius * c;
-                float tx = textureRect.left() + textureXRadius - textureXRadius * c;
-
-                float px2 = m_rect.right() - radius + radius * c;
-                float tx2 = textureRect.right() - textureXRadius + textureXRadius * c;
-
-                float py = m_rect.top() + radius - radius * s;
-                float ty = textureRect.top() + textureYRadius - textureYRadius * s;
-
-                float py2 = m_rect.bottom() - radius + radius * s;
-                float ty2 = textureRect.bottom() - textureYRadius + textureYRadius * s;
-
-                v[0].x = px; v[0].y = py;
-                v[0].tx = tx; v[0].ty = ty;
-
-                v[1].x = px; v[1].y = py2;
-                v[1].tx = tx; v[1].ty = ty2;
-
-                vlast[0].x = px2; vlast[0].y = py;
-                vlast[0].tx = tx2; vlast[0].ty = ty;
-
-                vlast[1].x = px2; vlast[1].y = py2;
-                vlast[1].tx = tx2; vlast[1].ty = ty2;
-
-                v += 2;
-                vlast -= 2;
-
-                float t = c;
-                c = c * cosStep - s * sinStep;
-                s = s * cosStep + t * sinStep;
-            }
+            WindowPixmapItem::updateTexturedRoundedRectGeometry(
+                        &m_geometry, m_rect, textureRect, m_radius);
         } else {
             m_geometry.allocate(4);
             QSGGeometry::updateTexturedRectGeometry(&m_geometry, m_rect, textureRect);
@@ -536,6 +491,92 @@ void WindowPixmapItem::updateItem()
         w->imageAddref();
 
         update();
+    }
+}
+
+void WindowPixmapItem::updateTexturedRoundedRectGeometry(
+        QSGGeometry *geometry, const QRectF &rect, const QRectF &textureRect, float radius)
+{
+    radius = qMin(float(qMin(rect.width(), rect.height()) * 0.5f), radius);
+    int segments = qBound(3, qCeil(radius * (M_PI / 6)), 18);
+    float angle = 0.5f * float(M_PI) / segments;
+
+    geometry->allocate((segments + 1) * 2 * 2);
+
+    QSGGeometry::TexturedPoint2D *v = geometry->vertexDataAsTexturedPoint2D();
+    QSGGeometry::TexturedPoint2D *vlast = v + (segments + 1) * 2 * 2 - 2;
+
+    float textureXRadius = radius * textureRect.width() / rect.width();
+    float textureYRadius = radius * textureRect.height() / rect.height();
+
+    float c = 1; float cosStep = qFastCos(angle);
+    float s = 0; float sinStep = qFastSin(angle);
+
+    for (int ii = 0; ii <= segments; ++ii) {
+        float px = rect.left() + radius - radius * c;
+        float tx = textureRect.left() + textureXRadius - textureXRadius * c;
+
+        float px2 = rect.right() - radius + radius * c;
+        float tx2 = textureRect.right() - textureXRadius + textureXRadius * c;
+
+        float py = rect.top() + radius - radius * s;
+        float ty = textureRect.top() + textureYRadius - textureYRadius * s;
+
+        float py2 = rect.bottom() - radius + radius * s;
+        float ty2 = textureRect.bottom() - textureYRadius + textureYRadius * s;
+
+        v[0].x = px; v[0].y = py;
+        v[0].tx = tx; v[0].ty = ty;
+
+        v[1].x = px; v[1].y = py2;
+        v[1].tx = tx; v[1].ty = ty2;
+
+        vlast[0].x = px2; vlast[0].y = py;
+        vlast[0].tx = tx2; vlast[0].ty = ty;
+
+        vlast[1].x = px2; vlast[1].y = py2;
+        vlast[1].tx = tx2; vlast[1].ty = ty2;
+
+        v += 2;
+        vlast -= 2;
+
+        float t = c;
+        c = c * cosStep - s * sinStep;
+        s = s * cosStep + t * sinStep;
+    }
+}
+
+void WindowPixmapItem::updateRoundedRectGeometry(QSGGeometry *geometry, const QRectF &rect, float radius)
+{
+    radius = qMin(float(qMin(rect.width(), rect.height()) * 0.5f), radius);
+    int segments = qBound(3, qCeil(radius * (M_PI / 6)), 18);
+    float angle = 0.5f * float(M_PI) / segments;
+
+    geometry->allocate((segments + 1) * 2 * 2);
+
+    QSGGeometry::Point2D *v = geometry->vertexDataAsPoint2D();
+    QSGGeometry::Point2D *vlast = v + (segments + 1) * 2 * 2 - 2;
+
+    float c = 1; float cosStep = qFastCos(angle);
+    float s = 0; float sinStep = qFastSin(angle);
+
+    for (int ii = 0; ii <= segments; ++ii) {
+        float px = rect.left() + radius - radius * c;
+        float px2 = rect.right() - radius + radius * c;
+        float py = rect.top() + radius - radius * s;
+        float py2 = rect.bottom() - radius + radius * s;
+
+        v[0].x = px; v[0].y = py;
+        v[1].x = px; v[1].y = py2;
+        vlast[0].x = px2; vlast[0].y = py;
+        vlast[1].x = px2; vlast[1].y = py2;
+
+        v += 2;
+        vlast -= 2;
+
+        float t = c;
+        c = c * cosStep - s * sinStep;
+        s = s * cosStep + t * sinStep;
     }
 }
 

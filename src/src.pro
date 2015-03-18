@@ -39,6 +39,7 @@ PUBLICHEADERS += \
     components/launchermonitor.h \
     components/launcherdbus.h \
     components/launcherfoldermodel.h \
+    compositor/windowpixmapitem.h \
     notifications/notificationmanager.h \
     notifications/lipsticknotification.h \
     notifications/notificationlistmodel.h \

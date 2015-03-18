@@ -20,6 +20,10 @@
 #include <QPointer>
 #include "lipstickglobal.h"
 
+QT_BEGIN_NAMESPACE
+class QSGGeometry;
+QT_END_NAMESPACE
+
 class LipstickCompositor;
 class LipstickCompositorWindow;
 class LIPSTICK_EXPORT WindowPixmapItem : public QQuickItem
@@ -61,6 +65,10 @@ public:
 
     qreal yScale() const;
     void setYScale(qreal);
+
+    static void updateTexturedRoundedRectGeometry(
+            QSGGeometry *geometry, const QRectF &rect,  const QRectF &textureRect, float radius);
+    static void updateRoundedRectGeometry(QSGGeometry *geometry, const QRectF &rect, float radius);
 
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *);
