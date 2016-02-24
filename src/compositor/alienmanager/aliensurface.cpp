@@ -29,6 +29,7 @@ AlienSurface::AlienSurface(AlienClient *client, QWaylandSurface *surface, uint32
             , m_coverized(false)
             , m_lastSize(0, 0)
             , m_serial(0)
+            , m_lastSerial(0)
 {
     LipstickCompositor *compositor = LipstickCompositor::instance();
     sendConfigure(compositor->width(), compositor->height());
@@ -101,6 +102,7 @@ void AlienSurface::alien_surface_ack_configure(Resource *resource, uint32_t seri
 void AlienSurface::alien_surface_request_state(Resource *resource, wl_array *array, uint32_t serial)
 {
     Q_UNUSED(resource);
+    Q_UNUSED(serial);
     bool wasHiddenOrCover = m_hidden | m_coverized;
     m_hidden = false;
 
@@ -109,8 +111,9 @@ void AlienSurface::alien_surface_request_state(Resource *resource, wl_array *arr
             m_hidden = true;
         }
     }
+
     // do some focus stealing prevenction
-    if (wasHiddenOrCover && !m_hidden && serial == wl_display_get_serial(surface()->compositor()->waylandDisplay())) {
+    if (wasHiddenOrCover && !m_hidden && serial == m_lastSerial) {
         emit surface()->raiseRequested();
     } else {
         updateStates();
@@ -142,6 +145,7 @@ void AlienSurface::sendConfigure(int w, int h)
     }
     QByteArray data = QByteArray::fromRawData((char *)states.data(), states.size() * sizeof(uint32_t));
     m_serial = wl_display_next_serial(surface()->compositor()->waylandDisplay());
+    m_lastSerial = m_serial;
 
     send_configure(w, h, data, m_serial);
     m_lastSize = QSize(w, h);
